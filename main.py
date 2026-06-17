@@ -1,12 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import textwrap
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.backends.backend_pdf import PdfPages
 from scipy import stats
 
 
@@ -23,15 +21,12 @@ def calculate_mode(data):
     values, counts = np.unique(data, return_counts=True)
     highest_frequency = counts.max()
 
-    # A dataset has no mode when every value occurs only once.
     if highest_frequency == 1:
         return "No mode"
 
-    # Include every value tied for the highest frequency.
     modes = values[counts == highest_frequency]
 
     def format_mode_value(value):
-        """Display whole numbers cleanly and preserve decimal values."""
         if np.isclose(value, round(value)):
             return str(int(round(value)))
         return f"{value:.4f}".rstrip("0").rstrip(".")
@@ -61,39 +56,13 @@ def compute_stats(data):
     }
 
 
-def justify_text(text, width=95):
-    """Wrap *text* to *width* characters per line and pad inter-word
-    spaces so every line but the last is flush on both edges.
-
-    Relies on the caller rendering the result in a monospace font,
-    since equal character counts only mean equal pixel widths there.
-    """
-    lines = textwrap.wrap(text, width=width)
-    justified_lines = []
-    for i, line in enumerate(lines):
-        words = line.split()
-        if i == len(lines) - 1 or len(words) == 1:
-            justified_lines.append(line)
-            continue
-        total_padding = width - sum(len(w) for w in words)
-        gap_count = len(words) - 1
-        base_spaces, extra_spaces = divmod(total_padding, gap_count)
-        justified_line = ""
-        for j, word in enumerate(words[:-1]):
-            spaces = base_spaces + (1 if j < extra_spaces else 0)
-            justified_line += word + " " * spaces
-        justified_line += words[-1]
-        justified_lines.append(justified_line)
-    return "\n".join(justified_lines)
-
-
 # ── main app ─────────────────────────────────────────────────────────────────
 
 class StatsDashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Basic Descriptive Statistics Dashboard")
-        self.geometry("1100x720")
+        self.geometry("1100x760")
         self.resizable(True, True)
         self.configure(bg="#f0f4f8")
 
@@ -123,12 +92,49 @@ class StatsDashboard(tk.Tk):
                   command=self._new_sample, **btn_style).pack(side="right", padx=6)
         tk.Button(toolbar, text="📂  Load CSV",
                   command=self._load_csv, **btn_style).pack(side="right", padx=6)
-        tk.Button(toolbar, text="📄  Export Report (PDF)",
-                  command=self._export_report, **btn_style).pack(side="right", padx=6)
+        tk.Button(toolbar, text="🗃️  View Data",
+                  command=self._toggle_view, **btn_style).pack(side="right", padx=6)
 
-        # ── main body: left = stats table, right = charts ────────────────────
-        body = tk.Frame(self, bg="#f0f4f8")
-        body.pack(fill="both", expand=True, padx=12, pady=10)
+        # ── main content area (swappable frames) ──────────────────
+        self.content = tk.Frame(self, bg="#f0f4f8")
+        self.content.pack(fill="both", expand=True, padx=12, pady=(10, 0))
+
+        self.tab_dashboard = tk.Frame(self.content, bg="#f0f4f8")
+        self.tab_dashboard.place(relwidth=1, relheight=1)
+
+        self.tab_data = tk.Frame(self.content, bg="#f0f4f8")
+        self.tab_data.place(relwidth=1, relheight=1)
+
+        self._build_dashboard_tab(self.tab_dashboard)
+        self._build_data_viewer_tab(self.tab_data)
+
+        self._showing_data = False
+        self.tab_dashboard.lift()
+
+        # ── interpretation panel ─────────────────────────────────────────────
+        interp_frame = tk.Frame(self, bg="#e8f0fe", bd=1, relief="solid")
+        interp_frame.pack(fill="x", padx=12, pady=(4, 4))
+
+        tk.Label(interp_frame, text="📝  Interpretation",
+                 font=("Helvetica", 10, "bold"),
+                 bg="#e8f0fe", fg="#1e3a5f").pack(anchor="w", padx=10, pady=(6, 2))
+
+        self.interp_var = tk.StringVar()
+        tk.Label(interp_frame, textvariable=self.interp_var,
+                 font=("Helvetica", 9), bg="#e8f0fe", fg="#333",
+                 anchor="w", justify="left", wraplength=1060,
+                 padx=10).pack(anchor="w", pady=(0, 6))
+
+        # ── status bar ───────────────────────────────────────────────────────
+        self.status_var = tk.StringVar(value="Using generated sample data (n=100)")
+        tk.Label(self, textvariable=self.status_var,
+                 font=("Helvetica", 9), bg="#d0dce8", fg="#333",
+                 anchor="w", padx=10).pack(fill="x", side="bottom")
+
+    def _build_dashboard_tab(self, parent):
+        """Stats table on the left, charts on the right."""
+        body = tk.Frame(parent, bg="#f0f4f8")
+        body.pack(fill="both", expand=True, padx=0, pady=6)
 
         # left panel – stats table
         left = tk.Frame(body, bg="#f0f4f8")
@@ -149,24 +155,87 @@ class StatsDashboard(tk.Tk):
                  bg="#f0f4f8", fg="#1e3a5f").pack(anchor="w", pady=(0, 6))
 
         self._build_charts(right)
-        # ── interpretation panel ─────────────────────────────────────────────
-        interp_frame = tk.Frame(self, bg="#e8f0fe", bd=1, relief="solid")
-        interp_frame.pack(fill="x", padx=12, pady=(0, 6))
 
-        tk.Label(interp_frame, text="📝  Interpretation",
-                 font=("Helvetica", 10, "bold"),
-                 bg="#e8f0fe", fg="#1e3a5f").pack(anchor="w", padx=10, pady=(6, 2))
+    def _build_data_viewer_tab(self, parent):
+        """Scrollable table showing every data point with index and value."""
+        # ── header row ───────────────────────────────────────────────────────
+        header = tk.Frame(parent, bg="#f0f4f8")
+        header.pack(fill="x", padx=6, pady=(8, 4))
 
-        self.interp_var = tk.StringVar()
-        tk.Label(interp_frame, textvariable=self.interp_var,
-                 font=("Helvetica", 9), bg="#e8f0fe", fg="#333",
-                 anchor="w", justify="left", wraplength=1060,
-                 padx=10).pack(anchor="w", pady=(0, 6))
-        # ── status bar ───────────────────────────────────────────────────────
-        self.status_var = tk.StringVar(value="Using generated sample data (n=100)")
-        tk.Label(self, textvariable=self.status_var,
-                 font=("Helvetica", 9), bg="#d0dce8", fg="#333",
-                 anchor="w", padx=10).pack(fill="x", side="bottom")
+        tk.Label(header, text="Raw Data Values",
+                 font=("Helvetica", 12, "bold"),
+                 bg="#f0f4f8", fg="#1e3a5f").pack(side="left")
+
+        # live count label
+        self.data_count_var = tk.StringVar()
+        tk.Label(header, textvariable=self.data_count_var,
+                 font=("Helvetica", 10), bg="#f0f4f8", fg="#555").pack(side="left", padx=12)
+
+        # search box
+        tk.Label(header, text="🔍 Search:",
+                 font=("Helvetica", 10), bg="#f0f4f8").pack(side="left", padx=(20, 4))
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", self._filter_data_table)
+        search_entry = tk.Entry(header, textvariable=self.search_var,
+                                font=("Helvetica", 10), width=14,
+                                bd=1, relief="solid")
+        search_entry.pack(side="left")
+
+        # export CSV button
+        tk.Button(header, text="💾  Export CSV",
+                  command=self._export_csv,
+                  bg="#2ecc71", fg="white", relief="flat",
+                  font=("Helvetica", 10, "bold"), padx=10, pady=3,
+                  cursor="hand2").pack(side="right", padx=4)
+
+        # ── treeview with scrollbars ──────────────────────────────────────────
+        frame = tk.Frame(parent, bg="white", bd=1, relief="solid")
+        frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        cols = ("#", "Value")
+        self.data_tree = ttk.Treeview(frame, columns=cols, show="headings",
+                                      selectmode="browse")
+
+        style = ttk.Style()
+        style.configure("DataView.Treeview.Heading",
+                         font=("Helvetica", 10, "bold"))
+        style.configure("DataView.Treeview",
+                         font=("Helvetica", 10), rowheight=24)
+        self.data_tree.configure(style="DataView.Treeview")
+
+        col_configs = [
+            ("#",     60,  "center"),
+            ("Value", 110, "e"),
+        ]
+        for col, width, anchor in col_configs:
+            self.data_tree.heading(col, text=col,
+                                   command=lambda c=col: self._sort_data_col(c))
+            self.data_tree.column(col, width=width, anchor=anchor, stretch=False)
+
+        self.data_tree.tag_configure("odd",  background="#f7f9fc")
+        self.data_tree.tag_configure("even", background="#ffffff")
+
+        vsb = ttk.Scrollbar(frame, orient="vertical",   command=self.data_tree.yview)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=self.data_tree.xview)
+        self.data_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        self.data_tree.pack(fill="both", expand=True)
+
+        # legend
+        legend = tk.Frame(parent, bg="#f0f4f8")
+        legend.pack(fill="x", padx=6, pady=(0, 6))
+        tk.Label(legend,
+                 text="Click column headers to sort",
+                 font=("Helvetica", 8), bg="#f0f4f8", fg="#666").pack(side="left")
+
+        # store sort state
+        self._sort_col   = "#"
+        self._sort_asc   = True
+        self._all_rows   = []   # full list of (idx, val, z, pct)
+
+    # ── stats table (dashboard tab) ──────────────────────────────────────────
 
     def _build_stats_table(self, parent):
         """Create the Treeview that shows stat name / value."""
@@ -212,6 +281,7 @@ class StatsDashboard(tk.Tk):
         self._update_table(s)
         self._update_interpretation(s)
         self._update_charts(s)
+        self._populate_data_viewer()
 
     def _update_table(self, s):
         """Clear and repopulate the Treeview."""
@@ -273,7 +343,7 @@ class StatsDashboard(tk.Tk):
         self.ax_hist.set_facecolor("#fafcff")
 
         # ── box-plot ─────────────────────────────────────────────────────────
-        bp = self.ax_box.boxplot(grades, orientation="vertical", patch_artist=True,
+        bp = self.ax_box.boxplot(grades, vert=True, patch_artist=True,
                                  boxprops=dict(facecolor="#4a90d9", alpha=0.6),
                                  medianprops=dict(color="#e74c3c", linewidth=2),
                                  whiskerprops=dict(linewidth=1.5),
@@ -285,7 +355,6 @@ class StatsDashboard(tk.Tk):
         self.ax_box.set_xticks([])
         self.ax_box.set_facecolor("#fafcff")
 
-        # annotate quartiles
         for label, val, side in [("Q1", s["Q1"], -0.35),
                                    ("Med", s["Median"], -0.35),
                                    ("Q3", s["Q3"], -0.35)]:
@@ -295,11 +364,97 @@ class StatsDashboard(tk.Tk):
         self.fig.tight_layout()
         self.canvas.draw()
 
+    # ── data viewer logic ─────────────────────────────────────────────────────
+
+    def _populate_data_viewer(self):
+        """Build row list and display it (respects current sort & search)."""
+        arr = self.data
+        self._all_rows = [(i, v) for i, v in enumerate(arr, start=1)]
+        self.data_count_var.set(f"({len(arr)} values)")
+        self._render_data_table(self._all_rows)
+
+    def _render_data_table(self, rows):
+        """Populate the data_tree from *rows* list."""
+        for item in self.data_tree.get_children():
+            self.data_tree.delete(item)
+
+        for stripe, (idx, val) in enumerate(rows):
+            tag = "odd" if stripe % 2 else "even"
+            self.data_tree.insert(
+                "", "end",
+                values=(idx, f"{val:.4f}"),
+                tags=(tag,)
+            )
+
+    def _filter_data_table(self, *_):
+        """Filter rows by search text (matches index or value)."""
+        query = self.search_var.get().strip().lower()
+        if not query:
+            self._render_data_table(self._all_rows)
+            return
+        filtered = [
+            r for r in self._all_rows
+            if query in str(r[0]) or query in f"{r[1]:.4f}"
+        ]
+        self._render_data_table(filtered)
+
+    def _sort_data_col(self, col):
+        """Sort data table by the clicked column header."""
+        col_map = {"#": 0, "Value": 1}
+        key_idx = col_map[col]
+
+        if self._sort_col == col:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_col = col
+            self._sort_asc = True
+
+        sorted_rows = sorted(self._all_rows, key=lambda r: r[key_idx],
+                             reverse=not self._sort_asc)
+
+        query = self.search_var.get().strip().lower()
+        if query:
+            sorted_rows = [
+                r for r in sorted_rows
+                if query in str(r[0]) or query in f"{r[1]:.4f}"
+            ]
+
+        self._render_data_table(sorted_rows)
+
+        for c in ["#", "Value"]:
+            arrow = (" ▲" if self._sort_asc else " ▼") if c == col else ""
+            self.data_tree.heading(c, text=c + arrow,
+                                   command=lambda c=c: self._sort_data_col(c))
+
+    def _export_csv(self):
+        """Export currently displayed data to a CSV file."""
+        path = filedialog.asksaveasfilename(
+            title="Save Data as CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            df = pd.DataFrame(self._all_rows, columns=["Index", "Value"])
+            df.to_csv(path, index=False)
+            messagebox.showinfo("Exported", f"Data saved to:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc))
+
     # ── button callbacks ─────────────────────────────────────────────────────
+
+    def _toggle_view(self):
+        """Switch between Dashboard and Data Viewer."""
+        self._showing_data = not self._showing_data
+        if self._showing_data:
+            self.tab_data.lift()
+        else:
+            self.tab_dashboard.lift()
 
     def _new_sample(self):
         """Generate a fresh random dataset."""
-        np.random.seed(None)   # different seed each time
+        np.random.seed(None)
         self.data = np.random.normal(loc=75, scale=12, size=100).clip(0, 100)
         self.status_var.set("Using newly generated sample data (n=100)")
         self._refresh()
@@ -320,7 +475,6 @@ class StatsDashboard(tk.Tk):
                                      "The CSV has no numeric columns.")
                 return
 
-            # if multiple numeric columns, let user pick one
             if len(numeric_cols) == 1:
                 col = numeric_cols[0]
             else:
@@ -364,90 +518,6 @@ class StatsDashboard(tk.Tk):
                   bg="#4a90d9", fg="white", padx=12).pack(pady=10)
         self.wait_window(win)
         return result[0]
-
-    def _export_report(self):
-        """Save the current stats, charts, and interpretation as a one-page PDF."""
-        path = filedialog.asksaveasfilename(
-            title="Save PDF Report",
-            defaultextension=".pdf",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
-        )
-        if not path:
-            return
-        try:
-            self._generate_pdf_report(path)
-            messagebox.showinfo("Export Successful", f"Report saved to:\n{path}")
-        except Exception as exc:
-            messagebox.showerror("Error exporting report", str(exc))
-
-    def _generate_pdf_report(self, path):
-        """Render the summary table, charts, and interpretation onto one PDF page."""
-        s = compute_stats(self.data)
-
-        fig = plt.figure(figsize=(8.5, 11), facecolor="white")
-        gs = fig.add_gridspec(4, 2, height_ratios=[0.5, 3.3, 2.7, 1.5], hspace=0.65, wspace=0.3)
-
-        # ── title ────────────────────────────────────────────────────────────
-        ax_title = fig.add_subplot(gs[0, :])
-        ax_title.axis("off")
-        ax_title.text(0.5, 0.7, "Descriptive Statistics Report",
-                      ha="center", va="center", fontsize=18, fontweight="bold",
-                      color="#1e3a5f")
-        ax_title.text(0.5, 0.15, self.status_var.get(),
-                      ha="center", va="center", fontsize=9, color="#555")
-
-        # ── summary table ────────────────────────────────────────────────────
-        ax_table = fig.add_subplot(gs[1, :])
-        ax_table.axis("off")
-        rows = [[name, val if isinstance(val, str) else f"{val:.4f}"]
-                for name, val in s.items()]
-        table = ax_table.table(cellText=rows, colLabels=["Statistic", "Value"],
-                               cellLoc="center", loc="center", bbox=[0, 0, 1, 1])
-        table.auto_set_font_size(False)
-        table.set_fontsize(9)
-        for (row, _col), cell in table.get_celld().items():
-            cell.PAD = 0.12
-            if row == 0:
-                cell.set_facecolor("#1e3a5f")
-                cell.set_text_props(color="white", fontweight="bold")
-            else:
-                cell.set_facecolor("#f7f9fc" if row % 2 == 0 else "#ffffff")
-
-        # ── histogram ────────────────────────────────────────────────────────
-        ax_hist = fig.add_subplot(gs[2, 0])
-        ax_hist.hist(self.data, bins=20, color="#4a90d9", edgecolor="white", alpha=0.85)
-        ax_hist.axvline(s["Mean"], color="#e74c3c", linestyle="--", linewidth=1.5,
-                        label=f"Mean = {s['Mean']:.1f}")
-        ax_hist.axvline(s["Median"], color="#2ecc71", linestyle="--", linewidth=1.5,
-                        label=f"Median = {s['Median']:.1f}")
-        ax_hist.set_title("Grade Distribution", fontsize=10, fontweight="bold")
-        ax_hist.set_xlabel("Grade")
-        ax_hist.set_ylabel("Frequency")
-        ax_hist.legend(fontsize=7)
-
-        # ── box plot ─────────────────────────────────────────────────────────
-        ax_box = fig.add_subplot(gs[2, 1])
-        ax_box.boxplot(self.data, orientation="vertical", patch_artist=True,
-                       boxprops=dict(facecolor="#4a90d9", alpha=0.6),
-                       medianprops=dict(color="#e74c3c", linewidth=2),
-                       flierprops=dict(marker="o", markerfacecolor="#e74c3c",
-                                       markersize=5, alpha=0.6))
-        ax_box.set_title("Box Plot", fontsize=10, fontweight="bold")
-        ax_box.set_ylabel("Grade")
-        ax_box.set_xticks([])
-
-        # ── interpretation ───────────────────────────────────────────────────
-        ax_interp = fig.add_subplot(gs[3, :])
-        ax_interp.axis("off")
-        ax_interp.text(0, 1.0, "Interpretation", fontsize=11, fontweight="bold",
-                       color="#1e3a5f", va="top")
-        justified_text = justify_text(self.interp_var.get(), width=95)
-        ax_interp.text(0, 0.8, justified_text, fontsize=8.5, va="top",
-                       ha="left", fontfamily="monospace", linespacing=1.6)
-
-        with PdfPages(path) as pdf:
-            pdf.savefig(fig)
-        plt.close(fig)
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
